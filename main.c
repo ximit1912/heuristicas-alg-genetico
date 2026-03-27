@@ -2,14 +2,19 @@
 #include <stdlib.h>
 #include <time.h>
 #include <math.h>
+#include <string.h>
 
 #define TAM_POPULACAO 5 /* CORRESPONDE A QNT DE SOLUCOES DE UMA POPULACAO */
-#define TAM_SOLUCAO 574 /* TAMANHO DA INSTANCIA, CORRESPONDE A UM CROMOSSOMO/INDIVIDUO/SOLUCAO INICIAL TRAÇANDO PARALELO COM ALGORITMOS GENETICOS */
-#define SOLUCAO_IDEAL 36905 /* MELHOR CUSTO CONHECIDO PARA A INSTANCIA, CORRESPONDE AO INDIVIDUO MODELO IDEAL */
+#define TAM_SOLUCAO 15112 /* TAMANHO DA INSTANCIA, CORRESPONDE A UM CROMOSSOMO/INDIVIDUO/SOLUCAO INICIAL TRAÇANDO PARALELO COM ALGORITMOS GENETICOS */
+#define SOLUCAO_IDEAL 142382641 /* MELHOR CUSTO CONHECIDO PARA A INSTANCIA, CORRESPONDE AO INDIVIDUO MODELO IDEAL */
+/* lista de melhores soluções conhecidas
+    u574 : 36905 | pcb1173 : 56892 | pr1002 : 259045 | brd14051 : 469385 
+    fnl4461 : 182566 | d15112 : 1573084 | pla33810 : 66048945 | pla85900 : 142382641
+*/
 
-int **populacaoAtual, classificacao[TAM_POPULACAO]; /* População atual, Temporariamente a proxima populacao */
+int **populacaoAtual, classificacao[TAM_POPULACAO]; /* População atual */
 
-unsigned long long int distTotal[TAM_POPULACAO], distAux, *fitness, novasDists[2];
+unsigned long long int distTotal[TAM_POPULACAO], *fitness, novasDists[2];
 
 // Estrutura para guardar as cidades do arquivo
 typedef struct{
@@ -33,6 +38,9 @@ void cortarSegmento(int*, int*);
 int verificaInseridoFilho(int*, int, int);
 unsigned long long int calculaDistTotal(int*);
 long int iniciarPairswap(int*);
+void copiarFilho(int*, int*);
+void gerarIndividuoAleatorio(int*);
+void aleatoriezarPopulacao(void);
 
 //Funções novas  e hierarquia entre elas
 void gerarNovaSolucao(int *, int*, int);
@@ -42,7 +50,8 @@ void inicializarPopulacao(void);     /* OK */
 int rodarAlgoritmoGenetico(void);
     void iniciarAvaliacao(void);         /* OK - Avalia as distancias totais da populacao para calcular fitness, retorna o melhor */
     void iniciarSelecao(void);           /* OK - Classifica para Seleção em ordem da melhor para a pior solução*/
-    void iniciarCruzamentoOX1(int*, int*);    /* OK - Faz cruzamento entre os 2 melhores com método OX1*/
+    void iniciarCruzamentoOX1(int*, int*);    /* OK - Faz cruzamento entre 2 pais (melhor + 1 aleatório) com método OX1 */
+    void iniciarCruzamentoOX2(int*, int*);    /* OK - Faz cruzamento entre 2 pais (melhor + 2° melhor) com método OX2 */
     void iniciarMutacao(int *, int*);   /* OK - Aplica mutação nos filhos gerado com a tecnica pair-swap de um nó fixo com todos os outros possiveis até encontrar melhoria*/
     int atualizarPopulacao(int*, int*); /* OK - Atualiza população caso tenham tido filhos melhores */
 /*=============================================================================================*/
@@ -51,9 +60,13 @@ int rodarAlgoritmoGenetico(void);
 
 void main(int argc, char *argv[]){
     clock_t inicio, fim;
+    srand(time(NULL)); // Seed para números aleatórios
     int i = 1, iteracoes,  /* Criterio de parada */
-        populacaoMudou = 1; /* Auxiliar para verificar se algum filho foi inserido na populacao, caso sim, avaliação e seleção deverão ser feitas novamente */
-    
+        populacaoMudou = 1,
+        geracoesComMelhoria = 0, /* Auxiliar para verificar se algum filho foi inserido na populacao, caso sim, avaliação e seleção deverão ser feitas novamente */
+        filho1[TAM_SOLUCAO] = {0},  
+        filho2[TAM_SOLUCAO] = {0};
+
     lerArquivo(argv[1]);
     alocarMemoria();
     
@@ -72,23 +85,27 @@ void main(int argc, char *argv[]){
             iniciarSelecao();   /* Seleção: ordena os melhores com base no fitness */
         }
         populacaoMudou = 0;
-        mostrarPopulacao(); /* Imprimir resultados */
-        
-        int filho1[TAM_SOLUCAO] = {0},
-            filho2[TAM_SOLUCAO] = {0};
+
+        if (i % 50 == 0)  /* A cada 50 iteracoes aleatoriza  */
+            aleatoriezarPopulacao();
+
         iniciarCruzamentoOX1(filho1, filho2); /* Reprodução: cross-over OX1*/
 
         iniciarMutacao(filho1, filho2); /* Mutação: pair-swap*/
 
+
         populacaoMudou = atualizarPopulacao(filho1, filho2);
-        if (populacaoMudou)
-            mostrarPopulacao();
+        if (populacaoMudou){
+            // mostrarPopulacao();
+            geracoesComMelhoria++;
+        }
 
         i--;
     }while (i > 0);
+    
     if (populacaoMudou){
         iniciarAvaliacao(); /* Avaliação: avalia o fitness */
-        iniciarSelecao();   /* Seleção: ordena os melhores com base no fitness */
+        iniciarSelecao();   
     }
     fim = time(NULL);
 
@@ -96,56 +113,49 @@ void main(int argc, char *argv[]){
     mostrarPopulacao();
     printf("MELHOR SOLUCAO GERADA:\n"); 
     printf("\tIndividuo %d | DistTotal: %lli (Fit: %lli)| ", classificacao[0], distTotal[classificacao[0]], fitness[classificacao[0]]);
-    printf("Tempo de execucao: %.2f | Iteracoes: %i", (float) fim - inicio, iteracoes);
+    printf("Tempo de execucao: %.2f | Iteracoes/Geracoes: %i | Iteracoes/Geracoes com melhoria: %i", (float) fim - inicio, iteracoes, geracoesComMelhoria);
 }
 
 // Manutenção da população
-int atualizarPopulacao(int *filho1, int *filho2)
-{
-    printf("\n-> Atualizando populacao ...\n");
-
+int atualizarPopulacao(int *filho1, int *filho2) {
     int pior = classificacao[TAM_POPULACAO - 1],
         segundoPior = classificacao[TAM_POPULACAO - 2],
-        terceiroPior = classificacao[TAM_POPULACAO - 3],
         populacaoMudou = 0;
 
-    if (novasDists[0] >= distTotal[pior] ) /* Manutenção da população: para o filho 1 */
-        printf("\tFilho 1 nao entra na populacao\n");
-    else{
-        printf("\tFilho 1 entrou no lugar do %d\n", pior);
-        populacaoAtual[pior] = filho1;
+    if (novasDists[0] < distTotal[pior]) { // Verifica se o filho 1 é melhor que o pior
+        copiarFilho(populacaoAtual[pior], filho1); // Copia o filho 1 para a posição do pior
         distTotal[pior] = novasDists[0];
-        pior = segundoPior; 
-        segundoPior = classificacao[TAM_POPULACAO - 3];
-
         populacaoMudou = 1;
-    }   
+    }
 
-    if (novasDists[1] >= distTotal[pior] ) /* Manutenção da população: para o filho 2 */
-            printf("\tFilho 2 nao entra na populacao\n");
-        else{
-            printf("\tFilho 2 entrou no lugar do %d\n", pior);
-            populacaoAtual[pior] = filho2;
-            distTotal[pior] = novasDists[1];
-
-            populacaoMudou = 1;
-            }
-    printf("<- Populacao atualizada !\n\n");
+    if (novasDists[1] < distTotal[segundoPior]) { // Verifica se o filho 2 é melhor que o segundo pior
+        copiarFilho(populacaoAtual[segundoPior], filho2); // Copia o filho 2 para a posição do segundo pior
+        distTotal[segundoPior] = novasDists[1];
+        populacaoMudou = 1;
+    }
 
     return populacaoMudou;
 }
 
+void copiarFilho(int *destino, int *fonte) {
+    for (int i = 0; i < TAM_SOLUCAO; i++) {
+        destino[i] = fonte[i];
+    }
+}
 
 void iniciarMutacao(int *filho1, int *filho2)
 {
         long int diffMutacao1, diffMutacao2;
-        printf("\n-> Iniciando Mutacao para filhos ...");
+        
+        // printf("\n-> Iniciando Mutacao para filhos ...");
         diffMutacao1 = iniciarPairswap(filho1);
         diffMutacao2 = iniciarPairswap(filho2);
 
         novasDists[0] -= diffMutacao1;
         novasDists[1] -= diffMutacao2;
 
+        // PRINTS
+        /* 
         if (!diffMutacao1){
             printf("\n\tFilho 1 | Nao melhorou: ----- | \n");
         }
@@ -160,14 +170,14 @@ void iniciarMutacao(int *filho1, int *filho2)
             printf("\tFilho 2 | NovaDistTotal: %lli (-%li) | \n ", novasDists[1], diffMutacao2); // mostrarSolucao(filho2); 
 
         printf("<- Mutacao finalizada !\n");   
+        */
 }
 
 // Faz Mutação com pair-swap, retorna a diferença do custo total
 long int iniciarPairswap(int *solucao)
 {
-    int noFixo = (rand() % (TAM_SOLUCAO-1)) + 1, /* produz valores aleatorios de 1 a (TAMSOL-1), para nao ser a origem */
-        melhorou = 0,  
-        i = TAM_SOLUCAO-1, 
+    int noFixo = (rand() % (TAM_SOLUCAO-2)) + 1, /* produz valores aleatorios de 1 a (TAMSOL-1), para nao ser a origem */
+        i = (rand() % (TAM_SOLUCAO-2)) + 1,
         temp;
     unsigned long long int distNova, distAntiga, distVizinhosNoFixo;
     long int distDiferenca = 0;
@@ -179,64 +189,138 @@ long int iniciarPairswap(int *solucao)
     distVizinhosNoFixo = calculaDistancia(cidades[solucao[noFixo - 1]-1], cidades[solucao[noFixo]-1]);
     distVizinhosNoFixo += calculaDistancia(cidades[solucao[noFixo]-1], cidades[solucao[noFixo + 1]-1]);
 
-    while(!melhorou && i > 0)
-    {
-        if(i != noFixo && i != noFixo+1 && i != noFixo-1)
-        {   
-            // Recalcula as distancias para os vizinhos do noFixo (1° elemento do par)
-            distAntiga = distVizinhosNoFixo;
-            // Calcula as distancias para os vizinhos do i (2° elemento do par)
-            distAntiga += calculaDistancia(cidades[solucao[i - 1]-1], cidades[solucao[i]-1]);
-            distAntiga += calculaDistancia(cidades[solucao[i]-1], cidades[solucao[i + 1]-1]);
-       
-            // Calcula as novas distancias para os novos vizinhos de i "swappado" (antes vizinhos de noFixo)
-            distNova = calculaDistancia(cidades[solucao[noFixo - 1]-1], cidades[solucao[i]-1]);
-            distNova += calculaDistancia(cidades[solucao[i]-1], cidades[solucao[noFixo + 1]-1]);
-            // Calcula as novas distancias para os novos vizinhos de noFixo "swappado" (antes vizinhos de i)
-            distNova += calculaDistancia(cidades[solucao[i - 1]-1], cidades[solucao[noFixo]-1]);
-            distNova += calculaDistancia(cidades[solucao[noFixo]-1], cidades[solucao[i + 1]-1]);
+    if(i != noFixo && i != noFixo+1 && i != noFixo-1)
+    {   
+        // Recalcula as distancias para os vizinhos do noFixo (1° elemento do par)
+        distAntiga = distVizinhosNoFixo;
+        // Calcula as distancias para os vizinhos do i (2° elemento do par)
+        distAntiga += calculaDistancia(cidades[solucao[i - 1]-1], cidades[solucao[i]-1]);
+        distAntiga += calculaDistancia(cidades[solucao[i]-1], cidades[solucao[i + 1]-1]);
+    
+        // Calcula as novas distancias para os novos vizinhos de i "swappado" (antes vizinhos de noFixo)
+        distNova = calculaDistancia(cidades[solucao[noFixo - 1]-1], cidades[solucao[i]-1]);
+        distNova += calculaDistancia(cidades[solucao[i]-1], cidades[solucao[noFixo + 1]-1]);
+        // Calcula as novas distancias para os novos vizinhos de noFixo "swappado" (antes vizinhos de i)
+        distNova += calculaDistancia(cidades[solucao[i - 1]-1], cidades[solucao[noFixo]-1]);
+        distNova += calculaDistancia(cidades[solucao[noFixo]-1], cidades[solucao[i + 1]-1]);
 
-            // printf("Trocando %d e %d, distAntiga: %lld, distNova: %lld\n", solucao[noFixo], solucao[i], distAntiga, distNova);
-            if(distNova < distAntiga)
-            {   
-                // Atualiza a distancia/custo total 
-                distDiferenca -= distAntiga;
-                distDiferenca += distNova;
-                melhorou = 1;
-                
-                // Faz a troca do par no conjunto solucao 
-                temp = solucao[noFixo];
-                solucao[noFixo] = solucao[i];
-                solucao[i] = temp;
+
+        // Atualiza a distancia/custo total 
+        distDiferenca -= distAntiga;
+        distDiferenca += distNova;
+        
+        // Faz a troca do par no conjunto solucao 
+        temp = solucao[noFixo];
+        solucao[noFixo] = solucao[i];
+        solucao[i] = temp;
+    }    
+
+    return -distDiferenca;
+}
+
+void aleatoriezarPopulacao()
+{
+    int indice;
+
+    for (int k = 0; k < TAM_POPULACAO/3; k++) { // Aleatoriza 1/3 da populacao, considerando os individuos no meio da classificacao 
+        indice = classificacao[(TAM_POPULACAO/3) + k];
+        gerarIndividuoAleatorio(populacaoAtual[indice]);
+        distTotal[indice] = calculaDistTotal(populacaoAtual[indice]);
+        
+    }
+}
+
+void gerarIndividuoAleatorio(int *individuo) {
+    for (int i = 0; i < TAM_SOLUCAO; i++) {
+        individuo[i] = i + 1; // Gera uma solução inicial ordenada
+    }
+    // Embaralha o indivíduo
+    for (int i = TAM_SOLUCAO - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        int temp = individuo[i];
+        individuo[i] = individuo[j];
+        individuo[j] = temp;
+    }
+}
+
+void iniciarCruzamentoOX2(int *filho1, int *filho2)
+{
+    // printf("-> Inicializando Crossover OX2 ...\n");
+
+    int pai1 = classificacao[0], 
+        pai2 = classificacao[1]; 
+
+    while (pai1 == pai2) /* Para os pais nao serem o mesmo */
+        pai2 = rand() % TAM_POPULACAO;
+
+    // Vetores para marcar quais elementos já foram inseridos nos filhos
+    int inseridosFilho1[TAM_SOLUCAO] = {0},
+        inseridosFilho2[TAM_SOLUCAO] = {0};
+
+    // Escolhe aleatoriamente alguns elementos do pai1 para o filho1
+    for (int i = 0; i < TAM_SOLUCAO / 2; i++) {
+        int pos = rand() % TAM_SOLUCAO; // Escolhe uma posição aleatória
+        filho1[pos] = populacaoAtual[pai1][pos]; // Copia o elemento do pai1 para o filho1
+        inseridosFilho1[populacaoAtual[pai1][pos] - 1] = 1; // Marca o elemento como inserido
+    }
+
+    // Escolhe aleatoriamente alguns elementos do pai2 para o filho2
+    for (int i = 0; i < TAM_SOLUCAO / 2; i++) {
+        int pos = rand() % TAM_SOLUCAO; // Escolhe uma posição aleatória
+        filho2[pos] = populacaoAtual[pai2][pos]; // Copia o elemento do pai2 para o filho2
+        inseridosFilho2[populacaoAtual[pai2][pos] - 1] = 1; // Marca o elemento como inserido
+    }
+
+    // Preenche os elementos restantes do filho1 com os elementos do pai2, mantendo a ordem
+    int j = 0;
+    for (int i = 0; i < TAM_SOLUCAO; i++) {
+        if (filho1[i] == 0) { // Se a posição no filho1 estiver vazia
+            while (inseridosFilho1[populacaoAtual[pai2][j] - 1]) { // Encontra o próximo elemento do pai2 que ainda não foi inserido
+                j++;
             }
-        }    
-
-        i--;
+            filho1[i] = populacaoAtual[pai2][j]; // Copia o elemento do pai2 para o filho1
+            inseridosFilho1[populacaoAtual[pai2][j] - 1] = 1; // Marca o elemento como inserido
+        }
     }
 
-    if(!melhorou)
-        return 0;
-    else
-    {
-        // printf("#Encontrado!\n\n#Pair-swap de conjSol[%d]=%d e conjSol[%d]=%d encontrou uma solucao melhor!", noFixo, solucao[i], i, solucao[noFixo]);
-        // printf("\n#Diferenca: %ld\n", distDiferenca);
-        return -distDiferenca;
+    // Preenche os elementos restantes do filho2 com os elementos do pai1, mantendo a ordem
+    j = 0;
+    for (int i = 0; i < TAM_SOLUCAO; i++) {
+        if (filho2[i] == 0) { // Se a posição no filho2 estiver vazia
+            while (inseridosFilho2[populacaoAtual[pai1][j] - 1]) { // Encontra o próximo elemento do pai1 que ainda não foi inserido
+                j++;
+            }
+            filho2[i] = populacaoAtual[pai1][j]; // Copia o elemento do pai1 para o filho2
+            inseridosFilho2[populacaoAtual[pai1][j] - 1] = 1; // Marca o elemento como inserido
+        }
     }
+
+    // Calcula as distâncias totais dos filhos
+    novasDists[0] = calculaDistTotal(filho1);
+    novasDists[1] = calculaDistTotal(filho2);
+    
+    // Exibe os resultados
+    // printf("\n\tDistTotal: %lli | ", novasDists[0]); printf("Filho 1: "); mostrarSolucao(filho1);
+    // printf("\tDistTotal: %lli | ", novasDists[1]); printf("Filho 2: "); mostrarSolucao(filho2);
+
+    // printf("<- Crossover-OX2 finalizado !\n");
 }
 
 // Faz Cross-over OX1
 void iniciarCruzamentoOX1(int *filho1, int *filho2)
 {
-    printf("-> Inicializando Crossover OX1 ...\n");
-    srand(time(NULL));               /* Seed fixa para testes */
+    // printf("-> Inicializando Crossover OX1 ...\n");
         
     int pai1 = classificacao[0], 
-        pai2 = classificacao[1],   /* Escolhe as 2 melhores solucoes como pais para o Cross-over */
+        pai2 = rand() % TAM_POPULACAO,   /* Escolhe a melhor solucao e alguma aleatoria como pais para o Cross-over */
         pontoCorte1, pontoCorte2, tamSegmento;
+
+    while (pai1 == pai2) /* Para os pais nao serem o mesmo */
+        pai2 = rand() % TAM_POPULACAO;
 
     cortarSegmento(&pontoCorte1, &pontoCorte2); /* Corta 2 pontos para escolher 1 segmento */
     tamSegmento = pontoCorte2 - pontoCorte1 + 1;
-    printf("\tPontos de corte: %d - %d (%dun)", pontoCorte1, pontoCorte2, tamSegmento);
+    // printf("\tPontos de corte: %d - %d (%dun)", pontoCorte1, pontoCorte2, tamSegmento);
 
     int inseridosFilho1[tamSegmento],
         inseridosFilho2[tamSegmento],
@@ -285,16 +369,17 @@ void iniciarCruzamentoOX1(int *filho1, int *filho2)
 
     novasDists[0] = calculaDistTotal(filho1);
     novasDists[1] = calculaDistTotal(filho2);
-    printf("\n\tFilho 1 | DistTotal: %lli | \n", novasDists[0]);  // mostrarSolucao(filho1); 
-    printf("\tFilho 2 | DistTotal: %lli | \n", novasDists[1]);    // mostrarSolucao(filho2);
 
-    printf("<- Crossover-OX1 finalizado !\n");
+    // printf("\n\tFilho 1 | DistTotal: %lli | \n", novasDists[0]);  
+    // printf("\tFilho 2 | DistTotal: %lli | \n", novasDists[1]);   
+
+    // printf("<- Crossover-OX1 finalizado !\n");
 }
 
 // Retorna custo de uma solucao
 unsigned long long int calculaDistTotal(int *solucao)
 {
-    distAux = 0;
+    unsigned long long int distAux = 0;
     int i;
     for (i = 1; i < TAM_SOLUCAO; i++)
     {   
@@ -357,12 +442,14 @@ void iniciarSelecao()
         classificacao[i] = temp;
     }
 
+    /*
     printf("\n-> Mostrando classificacao\n\t");
     for (int i = 0; i < TAM_POPULACAO; i++)
     {
         printf("%d, ", classificacao[i]);
     }
     printf("\n<- \n\n");
+    */
 }
 
 void iniciarAvaliacao()
@@ -377,11 +464,11 @@ void iniciarAvaliacao()
 // INICIALIZA A POPULACAO
 void inicializarPopulacao()
 {
-    srand(time(NULL)); // seed a mesma para testes
 
     printf("\n\t-> Iniciando vizinho mais proximo para cada individuo ...");
     for(int i = 0; i < TAM_POPULACAO; i++){   // Inicializa a população com construtiva vizinho mais proximo, alterando o nó inicial para gerar variação
         buscaLocalVizinhoMaisProximo(populacaoAtual[i], i);
+        printf("\n\t\t+ individuo %i gerado!", i);
     }
     printf("\n\t<- Vizinho mais proximo concluido!!\n");
 }
@@ -389,14 +476,14 @@ void inicializarPopulacao()
 // aloca memoria para as populacoes de solucoes 
 void alocarMemoria(void)
 {
-    int solucao;
+    int idSolucao;
 
     populacaoAtual = (int**) malloc(sizeof(int*) * TAM_POPULACAO);
     fitness = (unsigned long long int*) malloc(sizeof(unsigned long long int) * TAM_POPULACAO);
     
-    for (solucao = 0; solucao < TAM_POPULACAO; solucao++)
+    for (idSolucao = 0; idSolucao < TAM_POPULACAO; idSolucao++)
     {
-        populacaoAtual[solucao] = (int*) malloc(sizeof(int) * TAM_SOLUCAO);
+        populacaoAtual[idSolucao] = (int*) malloc(sizeof(int) * TAM_SOLUCAO);
     }
 }
 
@@ -424,7 +511,8 @@ void mostrarPopulacao()
 // BUSCA LOCAL VIZINHO MAIS PROXIMO
 void buscaLocalVizinhoMaisProximo(int *solucao, int idSolucao)
 {
-    distTotal[idSolucao] = 0, distAux = 0;
+    unsigned long long int distAux = 0;
+    distTotal[idSolucao] = 0;
     int i = 0, distancia, noInicial = rand() % TAM_SOLUCAO;
 
     /* Primeira cidade escolhida para iniciar o algoritmo, ESCOLHA ALTERANDO 'noAtual' */
@@ -536,39 +624,3 @@ void lerArquivo(char *nome)
 
     fclose(arq);
 }
-
-
-
-
-/*
-// GERA NOVA SOLUCAO A PARTIR DE OUTRA
-void gerarNovaSolucao(int *solucaoOrigem, int *solucaoDestino, int id){
-    int i = 0;
-
-    for (i = 0; i < TAM_SOLUCAO; i++){
-        solucaoDestino[i] = solucaoOrigem[i];
-    }
-
-    embaralhaSolucao(solucaoDestino);
-
-    distTotal[id] = 0;
-    for(i = 1; i < TAM_SOLUCAO; i++){
-        distTotal[id] += calculaDistancia(cidades[solucaoDestino[i-1] - 1], cidades[solucaoDestino[i] - 1]);
-    }
-    distTotal[id] += calculaDistancia(cidades[solucaoDestino[i-1] - 1], cidades[solucaoDestino[0] - 1]);
-}
-*/
-
-/*
-void embaralhaSolucao(int *solucao){
-    int j, temp;
-
-    for (int i = TAM_SOLUCAO-1; i > 0; i--) /* Algoritmo de Fisher-Yates para embaralhar a solucao e a diferenciar da original 
-    {
-        j = rand() % (i+1); /* gera um indice aleatorio entre 0 e i para ser trocado a partir do ultimo indice 
-        temp = solucao[i];
-        solucao[i] = solucao[j];
-        solucao[j] = temp;
-    }
-}
-*/
